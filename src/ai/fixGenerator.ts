@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as https from 'https';
 import { RuleMatch, AIFixPrompt } from '../types';
 import { getEnvVar } from '../utils/envReader';
 
@@ -62,7 +63,7 @@ export class AIFixGenerator {
 
     if (apiKey) {
       try {
-        const enhanced = await this.callOpenAI(apiKey, issue, framework, affectedFiles);
+        const enhanced = await this.callOpenAI(apiKey, issue, framework);
         explanation = enhanced.explanation;
         remediationPlan = enhanced.remediationPlan;
       } catch (err) {
@@ -71,40 +72,23 @@ export class AIFixGenerator {
         console.error('[SecureScan] OPENAI REQUEST FAILED:', msg);
       }
     } else {
-      console.warn('[SecureScan] OPENAI REQUEST SKIPPED — no API key configured. Add key via: Settings > securescan.openaiApiKey or OPENAI_API_KEY env var');
+      console.warn('[SecureScan] OPENAI REQUEST SKIPPED — no API key. Add via Settings: securescan.openaiApiKey');
     }
 
-    return {
-      issueId: issue.ruleId,
-      explanation,
-      remediationPlan,
-      copyablePrompt,
-      affectedFiles,
-    };
+    return { issueId: issue.ruleId, explanation, remediationPlan, copyablePrompt, affectedFiles };
   }
 
-  private async callOpenAI(
+  private callOpenAI(
     apiKey: string,
     issue: RuleMatch,
     framework: string,
-    affectedFiles: string[]
   ): Promise<{ explanation: string; remediationPlan: string }> {
-    const { default: OpenAI } = await import('openai');
-    const client = new OpenAI({ apiKey });
-
     const locationsSummary = issue.locations
       .slice(0, 5)
       .map(l => `  - ${l.file}:${l.line}${l.snippet ? ` — ${l.snippet}` : ''}`)
       .join('\n');
 
-    const requestStart = Date.now();
-    telemetry.lastRequestTime = requestStart;
-    telemetry.lastError = null;
-    telemetry.requestCount++;
-
-    console.log(`[SecureScan] OPENAI REQUEST STARTED — issue: ${issue.ruleId}, model: gpt-4o-mini, request #${telemetry.requestCount}`);
-
-    const response = await client.chat.completions.create({
+    const body = JSON.stringify({
       model: 'gpt-4o-mini',
       messages: [
         {
@@ -113,38 +97,77 @@ export class AIFixGenerator {
         },
         {
           role: 'user',
-          content: `Security issue found in a ${framework} application:
-
-Issue: ${issue.title}
-Severity: ${issue.severity}
-Description: ${issue.description}
-
-Affected locations:
-${locationsSummary}
-
-Provide:
-1. A 2-3 sentence explanation of why this is dangerous
-2. A step-by-step remediation plan (3-5 steps)
-
-Respond in JSON: { "explanation": "...", "remediationPlan": "..." }`,
+          content: `Security issue found in a ${framework} application:\n\nIssue: ${issue.title}\nSeverity: ${issue.severity}\nDescription: ${issue.description}\n\nAffected locations:\n${locationsSummary}\n\nProvide:\n1. A 2-3 sentence explanation of why this is dangerous\n2. A step-by-step remediation plan (3-5 steps)\n\nRespond in JSON: { "explanation": "...", "remediationPlan": "..." }`,
         },
       ],
       temperature: 0.3,
       max_tokens: 600,
     });
 
-    const durationMs = Date.now() - requestStart;
-    telemetry.lastResponseTime = Date.now();
-    telemetry.lastDurationMs = durationMs;
+    const requestStart = Date.now();
+    telemetry.lastRequestTime = requestStart;
+    telemetry.lastError = null;
+    telemetry.requestCount++;
 
-    const tokensUsed = response.usage?.total_tokens ?? 0;
-    telemetry.totalTokensUsed += tokensUsed;
+    console.log(`[SecureScan] OPENAI REQUEST STARTED — issue: ${issue.ruleId}, model: gpt-4o-mini, request #${telemetry.requestCount}`);
 
-    console.log(`[SecureScan] OPENAI RESPONSE RECEIVED — duration: ${durationMs}ms, tokens: ${tokensUsed}, total tokens used: ${telemetry.totalTokensUsed}`);
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: 'api.openai.com',
+          path: '/v1/chat/completions',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Length': Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => {
+            const durationMs = Date.now() - requestStart;
+            telemetry.lastResponseTime = Date.now();
+            telemetry.lastDurationMs = durationMs;
 
-    const content = response.choices[0]?.message?.content ?? '{}';
-    const parsed = JSON.parse(content) as { explanation: string; remediationPlan: string };
-    return parsed;
+            if (res.statusCode !== 200) {
+              const msg = `OpenAI API error ${res.statusCode}: ${data}`;
+              telemetry.lastError = msg;
+              console.error('[SecureScan] OPENAI REQUEST FAILED:', msg);
+              reject(new Error(msg));
+              return;
+            }
+
+            try {
+              const json = JSON.parse(data) as {
+                choices: Array<{ message: { content: string } }>;
+                usage?: { total_tokens: number };
+              };
+              const tokens = json.usage?.total_tokens ?? 0;
+              telemetry.totalTokensUsed += tokens;
+              console.log(`[SecureScan] OPENAI RESPONSE RECEIVED — duration: ${durationMs}ms, tokens: ${tokens}, total: ${telemetry.totalTokensUsed}`);
+
+              const content = json.choices[0]?.message?.content ?? '{}';
+              const parsed = JSON.parse(content) as { explanation: string; remediationPlan: string };
+              resolve(parsed);
+            } catch (e) {
+              reject(new Error(`Failed to parse OpenAI response: ${e}`));
+            }
+          });
+        }
+      );
+
+      req.on('error', (e) => {
+        const msg = e.message;
+        telemetry.lastError = msg;
+        console.error('[SecureScan] OPENAI REQUEST FAILED:', msg);
+        reject(e);
+      });
+
+      req.write(body);
+      req.end();
+    });
   }
 
   buildPrompt(issue: RuleMatch, framework: string, affectedFiles: string[]): string {
