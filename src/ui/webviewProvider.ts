@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { AuthManager } from '../authentication/authManager';
 import { StateManager } from '../storage/stateManager';
 import { SecurityScanner } from '../scanner/scanner';
 import { AIFixGenerator } from '../ai/fixGenerator';
@@ -19,7 +18,6 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly authManager: AuthManager,
     private readonly stateManager: StateManager,
   ) {
     this.scanner = new SecurityScanner(globalRuleRegistry);
@@ -40,12 +38,10 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 
-    // Listen to messages from webview
     webviewView.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
       await this.handleMessage(message);
     });
 
-    // Push initial state when ready
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
         this.pushState();
@@ -65,39 +61,6 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
 
       case 'rescan':
         await this.runScan(true);
-        break;
-
-      case 'signIn': {
-        const payload = message.payload as { provider?: string; email?: string };
-        const provider = (payload.provider ?? 'github') as 'google' | 'github';
-
-        this.post({ type: 'scanProgress', payload: { message: `Opening browser for ${provider} sign-in...`, percent: 50 } });
-
-        const result = await this.authManager.signInWithOAuth(provider);
-        if (result.success) {
-          this.post({ type: 'authSuccess', payload: this.authManager.getState() });
-          this.pushState();
-        } else {
-          this.post({ type: 'authError', payload: result.error });
-        }
-        break;
-      }
-
-      case 'signInDemo': {
-        const payload = message.payload as { email: string };
-        const result = await this.authManager.signInDemo(payload.email || 'demo@securescan.dev');
-        if (result.success) {
-          this.post({ type: 'authSuccess', payload: this.authManager.getState() });
-          this.pushState();
-        } else {
-          this.post({ type: 'authError', payload: result.error });
-        }
-        break;
-      }
-
-      case 'signOut':
-        await this.authManager.signOut();
-        this.pushState();
         break;
 
       case 'openFile': {
@@ -135,11 +98,6 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (!this.authManager.isAuthenticated()) {
-      this.post({ type: 'error', payload: 'Please sign in to scan.' });
-      return;
-    }
-
     if (isRescan) {
       this.stateManager.clearResolvedIssues();
     }
@@ -157,7 +115,6 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
         }
       );
 
-      // After rescan, unmark issues that still exist
       if (isRescan) {
         const activeRuleIds = new Set(result.issues.map(i => i.ruleId));
         const stillResolved = resolvedIssues.filter(id => !activeRuleIds.has(id));
@@ -187,7 +144,6 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
       payload: {
         scanResult: { ...result, score },
         resolvedIssues: resolved,
-        authState: this.authManager.getState(),
       },
     });
   }
@@ -198,7 +154,6 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
       payload: {
         scanResult: this.stateManager.getLastScanResult() ?? null,
         resolvedIssues: this.stateManager.getResolvedIssues(),
-        authState: this.authManager.getState(),
       },
     });
   }
