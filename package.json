@@ -1,0 +1,123 @@
+{
+  "name": "securescan",
+  "displayName": "SecureScan",
+  "description": "AI-powered security copilot for vibe coders. Scan your codebase for vulnerabilities and get AI-generated fix prompts.",
+  "version": "1.0.0",
+  "publisher": "securescan",
+  "icon": "resources/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Security",
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "security",
+    "vulnerabilities",
+    "ai",
+    "scanner",
+    "copilot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/satvik9373/securityscan"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "securescan",
+          "title": "SecureScan",
+          "icon": "resources/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "securescan": [
+        {
+          "type": "webview",
+          "id": "securescan.mainView",
+          "name": "SecureScan"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "securescan.scan",
+        "title": "SecureScan: Scan Project"
+      },
+      {
+        "command": "securescan.rescan",
+        "title": "SecureScan: Rescan Project"
+      },
+      {
+        "command": "securescan.signIn",
+        "title": "SecureScan: Sign In"
+      },
+      {
+        "command": "securescan.signOut",
+        "title": "SecureScan: Sign Out"
+      },
+      {
+        "command": "securescan.openFile",
+        "title": "SecureScan: Open File at Location"
+      }
+    ],
+    "configuration": {
+      "title": "SecureScan",
+      "properties": {
+        "securescan.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API key for AI-generated fix prompts"
+        },
+        "securescan.clerkPublishableKey": {
+          "type": "string",
+          "default": "",
+          "description": "Clerk publishable key for authentication"
+        },
+        "securescan.autoScanOnOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically scan when a project is opened"
+        },
+        "securescan.excludePatterns": {
+          "type": "array",
+          "default": ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**"],
+          "description": "Glob patterns to exclude from scanning"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "@clerk/backend": "^1.0.0",
+    "axios": "^1.6.0",
+    "openai": "^4.28.0",
+    "ignore": "^5.3.0",
+    "minimatch": "^9.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

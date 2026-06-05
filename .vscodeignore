@@ -1,0 +1,15 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+.eslintrc.json
+**/*.map
+node_modules/**
+!node_modules/@clerk/backend/**
+!node_modules/axios/**
+!node_modules/openai/**
+!node_modules/ignore/**
+!node_modules/minimatch/**
+tsconfig.json
+.env
+.env.example
