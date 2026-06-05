@@ -150,6 +150,7 @@ export type WebviewMessageType =
   | 'updateState'
   | 'scanProgress'
   | 'scanComplete'
+  | 'authProgress'
   | 'authSuccess'
   | 'authError'
   | 'error';

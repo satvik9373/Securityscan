@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { AuthManager } from '../authentication/authManager';
 import { StateManager } from '../storage/stateManager';
 import { SecurityScanner } from '../scanner/scanner';
 import { AIFixGenerator } from '../ai/fixGenerator';
@@ -18,9 +19,10 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
+    private readonly authManager: AuthManager,
     private readonly stateManager: StateManager,
   ) {
-    this.scanner = new SecurityScanner(globalRuleRegistry);
+    this.scanner     = new SecurityScanner(globalRuleRegistry);
     this.fixGenerator = new AIFixGenerator();
   }
 
@@ -38,20 +40,35 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 
-    webviewView.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
-      await this.handleMessage(message);
+    webviewView.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
+      await this.handleMessage(msg);
     });
 
     webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) {
-        this.pushState();
-      }
+      if (webviewView.visible) this.pushState();
     });
   }
 
-  private async handleMessage(message: WebviewMessage): Promise<void> {
-    switch (message.type) {
+  private async handleMessage(msg: WebviewMessage): Promise<void> {
+    switch (msg.type) {
       case 'ready':
+        this.pushState();
+        break;
+
+      case 'signIn': {
+        this.post({ type: 'authProgress', payload: 'Opening GitHub sign-in...' });
+        const result = await this.authManager.signIn();
+        if (result.success) {
+          this.post({ type: 'authSuccess', payload: this.authManager.getState() });
+          this.pushState();
+        } else {
+          this.post({ type: 'authError', payload: result.error });
+        }
+        break;
+      }
+
+      case 'signOut':
+        await this.authManager.signOut();
         this.pushState();
         break;
 
@@ -64,14 +81,14 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'openFile': {
-        const loc = message.payload as { file: string; line: number };
+        const loc = msg.payload as { file: string; line: number };
         openFileAtLine(loc.file, loc.line);
         break;
       }
 
       case 'generateFix': {
-        const payload = message.payload as { ruleId: string };
-        const result = this.stateManager.getLastScanResult();
+        const payload = msg.payload as { ruleId: string };
+        const result  = this.stateManager.getLastScanResult();
         if (!result) break;
         const issue = result.issues.find(i => i.ruleId === payload.ruleId);
         if (!issue) break;
@@ -81,7 +98,7 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
       }
 
       case 'markResolved': {
-        const payload = message.payload as { ruleId: string };
+        const payload = msg.payload as { ruleId: string };
         this.stateManager.markIssueResolved(payload.ruleId);
         this.recalcAndPush();
         break;
@@ -92,35 +109,32 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
   private async runScan(isRescan: boolean): Promise<void> {
     if (this.isScanning) return;
 
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
+    if (!this.authManager.isAuthenticated()) {
+      this.post({ type: 'error', payload: 'Please sign in to scan your project.' });
+      return;
+    }
+
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
       this.post({ type: 'error', payload: 'No workspace folder open. Open a project to scan.' });
       return;
     }
 
-    if (isRescan) {
-      this.stateManager.clearResolvedIssues();
-    }
+    if (isRescan) this.stateManager.clearResolvedIssues();
 
     this.isScanning = true;
-    const rootPath = workspaceFolders[0].uri.fsPath;
+    const rootPath      = folders[0].uri.fsPath;
     const resolvedIssues = this.stateManager.getResolvedIssues();
 
     try {
-      const result = await this.scanner.scan(
-        rootPath,
-        resolvedIssues,
-        (message, percent) => {
-          this.post({ type: 'scanProgress', payload: { message, percent } });
-        }
-      );
+      const result = await this.scanner.scan(rootPath, resolvedIssues, (message, percent) => {
+        this.post({ type: 'scanProgress', payload: { message, percent } });
+      });
 
       if (isRescan) {
-        const activeRuleIds = new Set(result.issues.map(i => i.ruleId));
-        const stillResolved = resolvedIssues.filter(id => !activeRuleIds.has(id));
-        for (const id of stillResolved) {
-          this.stateManager.markIssueResolved(id);
-        }
+        const activeIds    = new Set(result.issues.map(i => i.ruleId));
+        const stillResolved = resolvedIssues.filter(id => !activeIds.has(id));
+        for (const id of stillResolved) this.stateManager.markIssueResolved(id);
       }
 
       this.stateManager.saveScanResult(result);
@@ -138,13 +152,10 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
     const result = this.stateManager.getLastScanResult();
     if (!result) return;
     const resolved = this.stateManager.getResolvedIssues();
-    const score = calculateSecurityScore(result.issues, resolved);
+    const score    = calculateSecurityScore(result.issues, resolved);
     this.post({
       type: 'updateState',
-      payload: {
-        scanResult: { ...result, score },
-        resolvedIssues: resolved,
-      },
+      payload: { scanResult: { ...result, score }, resolvedIssues: resolved, authState: this.authManager.getState() },
     });
   }
 
@@ -152,14 +163,15 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
     this.post({
       type: 'updateState',
       payload: {
-        scanResult: this.stateManager.getLastScanResult() ?? null,
+        scanResult:    this.stateManager.getLastScanResult() ?? null,
         resolvedIssues: this.stateManager.getResolvedIssues(),
+        authState:     this.authManager.getState(),
       },
     });
   }
 
-  private post(message: WebviewMessage): void {
-    this.view?.webview.postMessage(message);
+  private post(msg: WebviewMessage): void {
+    this.view?.webview.postMessage(msg);
   }
 
   refresh(): void {
