@@ -23,16 +23,13 @@ export class AuthManager {
   private async loadPersistedState(): Promise<void> {
     const token = await this.context.secrets.get(SESSION_KEY);
     const userJson = this.context.globalState.get<string>(USER_KEY);
-
     if (token && userJson) {
       try {
         const user = JSON.parse(userJson) as AuthUser;
         this.state = { isAuthenticated: true, user, sessionToken: token };
         this.onStateChangeEmitter.fire(this.state);
         return;
-      } catch {
-        // corrupted — clear
-      }
+      } catch { /* corrupted */ }
     }
     await this.clearSession();
   }
@@ -50,81 +47,55 @@ export class AuthManager {
 
     try {
       const port = await findAvailablePort();
-      const callbackUrl = `http://127.0.0.1:${port}/callback`;
-      const frontendApi = this.getFrontendApiBase(publishableKey);
 
-      // Step 1: Create a sign-in attempt with OAuth strategy
-      const signInResp = await axios.post(
-        `${frontendApi}/v1/client/sign_ins`,
-        new URLSearchParams({
-          strategy: `oauth_${provider}`,
-          redirect_url: callbackUrl,
-          action_complete_redirect_url: callbackUrl,
-        }).toString(),
-        {
-          headers: {
-            Authorization: `Bearer ${publishableKey}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'origin': frontendApi,
-          },
-          timeout: 10000,
-        }
-      );
+      // Start local HTTP server that serves the Clerk JS auth page
+      // and receives the session result via POST /done
+      const serverPromise = startOAuthCallbackServer(port, publishableKey, provider);
 
-      const signInData = signInResp.data?.response ?? signInResp.data;
-      const redirectUrl =
-        signInData?.first_factor_verification?.external_verification_redirect_url ??
-        signInData?.external_verification_redirect_url;
+      // Open the local auth page in the user's default browser
+      await vscode.env.openExternal(vscode.Uri.parse(`http://127.0.0.1:${port}/`));
 
-      if (!redirectUrl) {
-        const errMsg = signInResp.data?.errors?.[0]?.message ?? 'Could not get OAuth redirect URL from Clerk.';
-        return { success: false, error: errMsg };
-      }
-
-      // Step 2: Start local callback server BEFORE opening browser
-      const serverPromise = startOAuthCallbackServer(port);
-
-      // Step 3: Open browser for user to authenticate
-      await vscode.env.openExternal(vscode.Uri.parse(redirectUrl));
-
-      // Notify UI that browser is open
-      this.onStateChangeEmitter.fire({ ...this.state });
-
-      // Step 4: Wait for callback
+      // Wait for browser to complete OAuth and POST result back
       const result = await serverPromise;
 
       if (result.error) {
         return { success: false, error: result.error };
       }
 
-      // Step 5: Get user info from Clerk using the session
-      const user = await this.resolveUserFromCallback(
-        frontendApi,
-        publishableKey,
-        result.dbJwt,
-        result.sessionId,
-        signInData?.id
-      );
+      // Build user object from browser-reported data
+      let user: AuthUser | null = result.userId
+        ? {
+            id: result.userId,
+            email: result.email ?? '',
+            firstName: result.firstName,
+            lastName: result.lastName,
+            imageUrl: result.imageUrl,
+          }
+        : null;
 
-      const sessionToken = result.dbJwt ?? result.sessionId ?? signInData?.id ?? 'authenticated';
+      // Optionally enrich with Backend API if secret key is available
+      const secretKey = this.getClerkSecretKey();
+      if (secretKey && result.userId && !result.email) {
+        user = (await this.fetchUserBySecretKey(secretKey, result.userId)) ?? user;
+      }
+
+      const sessionToken = result.token ?? `session_${Date.now()}`;
       await this.persistSession(sessionToken, user);
-
       return { success: true };
+
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'OAuth authentication failed';
       return { success: false, error: msg };
     }
   }
 
-  // ── Demo / Email Sign In (fallback) ────────────────────────────────────────
+  // ── Demo Sign In ───────────────────────────────────────────────────────────
 
   async signInDemo(email: string): Promise<{ success: boolean; error?: string }> {
     const user: AuthUser = {
       id: `demo_${Date.now()}`,
       email,
       firstName: email.split('@')[0],
-      lastName: undefined,
-      imageUrl: undefined,
     };
     await this.persistSession(`demo_${Date.now()}`, user);
     return { success: true };
@@ -134,65 +105,10 @@ export class AuthManager {
     await this.clearSession();
   }
 
-  getState(): AuthState {
-    return this.state;
-  }
+  getState(): AuthState { return this.state; }
+  isAuthenticated(): boolean { return this.state.isAuthenticated; }
 
-  isAuthenticated(): boolean {
-    return this.state.isAuthenticated;
-  }
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
-
-  private async resolveUserFromCallback(
-    frontendApi: string,
-    publishableKey: string,
-    dbJwt?: string,
-    sessionId?: string,
-    signInId?: string
-  ): Promise<AuthUser | null> {
-    const secretKey = this.getClerkSecretKey();
-
-    // Try Backend API if we have secret key + session ID
-    if (secretKey && sessionId) {
-      try {
-        const sessResp = await axios.get(
-          `https://api.clerk.com/v1/sessions/${sessionId}`,
-          { headers: { Authorization: `Bearer ${secretKey}` }, timeout: 8000 }
-        );
-        const userId = sessResp.data?.user_id;
-        if (userId) {
-          return await this.fetchUserBySecretKey(secretKey, userId);
-        }
-      } catch {
-        // fallback below
-      }
-    }
-
-    // Try to get user from the active session via frontend API
-    if (dbJwt) {
-      try {
-        const meResp = await axios.get(`${frontendApi}/v1/me`, {
-          headers: { Authorization: `Bearer ${dbJwt}` },
-          timeout: 8000,
-        });
-        const u = meResp.data?.response ?? meResp.data;
-        if (u?.id) {
-          return {
-            id: u.id,
-            email: u.email_addresses?.[0]?.email_address ?? '',
-            firstName: u.first_name,
-            lastName: u.last_name,
-            imageUrl: u.image_url,
-          };
-        }
-      } catch {
-        // fallback
-      }
-    }
-
-    return null;
-  }
+  // ── Private helpers ────────────────────────────────────────────────────────
 
   private async fetchUserBySecretKey(secretKey: string, userId: string): Promise<AuthUser | null> {
     try {
@@ -246,18 +162,16 @@ export class AuthManager {
   }
 
   getFrontendApiBase(publishableKey: string): string {
-    // pk_test_BASE64. — base64 encodes the frontend API host ending with "$"
+    // Clerk publishable keys encode the frontend API host as base64 ending with "$"
     const parts = publishableKey.split('_');
     if (parts.length >= 3) {
       const encoded = parts[2].replace(/[.$]+$/, '');
       try {
-        const decoded = Buffer.from(encoded, 'base64').toString('utf-8').replace(/[.$\0]+$/, '');
+        const decoded = Buffer.from(encoded, 'base64').toString('utf-8').replace(/[.$\0\n\r]+$/, '');
         if (decoded.includes('.') && decoded.length > 4) {
           return `https://${decoded}`;
         }
-      } catch {
-        // fall through
-      }
+      } catch { /* fall through */ }
     }
     return 'https://api.clerk.com';
   }
