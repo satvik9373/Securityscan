@@ -407,6 +407,9 @@ const vscode = acquireVsCodeApi();
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let S = {
+  auth:       { isAuthenticated: false, user: null },
+  authBusy:   false,   // waiting for GitHub sign-in
+  authError:  null,
   scan:     null,
   resolved: [],
   scanning: false,
@@ -456,12 +459,15 @@ window.addEventListener('message', ev => {
   switch (msg.type) {
     case 'updateState': {
       const prev = S.scanning;
-      S.scanning = false;
+      S.scanning  = false;
+      S.authBusy  = false;
+      S.authError = null;
+      if (msg.payload.authState      !== undefined) S.auth     = msg.payload.authState;
       if (msg.payload.scanResult     !== undefined) S.scan     = msg.payload.scanResult;
       if (msg.payload.resolvedIssues !== undefined) S.resolved = msg.payload.resolvedIssues;
       S.error = null;
       updateProgressDOM();
-      render(prev !== S.scanning); // animate if we just finished scanning
+      render(prev !== S.scanning);
       if (msg.payload.fixPrompt) openFixModal(msg.payload.fixPrompt);
       break;
     }
@@ -484,6 +490,25 @@ window.addEventListener('message', ev => {
       render(true); // fade-in new results
       break;
     }
+    case 'authProgress':
+      S.authBusy  = true;
+      S.authError = null;
+      render(false);
+      break;
+
+    case 'authSuccess':
+      S.authBusy  = false;
+      S.authError = null;
+      if (msg.payload) S.auth = msg.payload;
+      render(true);
+      break;
+
+    case 'authError':
+      S.authBusy  = false;
+      S.authError = msg.payload;
+      render(false);
+      break;
+
     case 'error': {
       S.scanning = false;
       S.error    = msg.payload;
@@ -496,6 +521,14 @@ window.addEventListener('message', ev => {
 
 // ── Actions ────────────────────────────────────────────────────────────────────
 function post(type, payload) { vscode.postMessage({ type, payload }); }
+
+function signIn() {
+  S.authBusy  = true;
+  S.authError = null;
+  render(false);
+  post('signIn');
+}
+function signOut() { post('signOut'); }
 
 function scan() {
   S.scanning = true;
@@ -563,12 +596,50 @@ function scoreColor(n) {
 function sevDot(s)   { return '<span class="sev-dot dot-' + (s||'info') + '"></span>'; }
 function sevBadge(s) { return '<span class="badge badge-' + (s||'info') + '">' + (s||'info') + '</span>'; }
 
+// ── Auth UI ────────────────────────────────────────────────────────────────────
+function renderSignIn() {
+  const busy = S.authBusy;
+  return \`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:220px;padding:24px 16px;">
+    <div style="font-size:20px;font-weight:800;letter-spacing:-0.04em;margin-bottom:6px;color:var(--fg);">SecureScan</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:22px;text-align:center;line-height:1.6;max-width:240px;">Sign in to scan your codebase for security vulnerabilities</div>
+    \${S.authError ? '<div class="error-banner" style="margin-bottom:14px;width:100%;max-width:260px;">' + esc(S.authError) + '</div>' : ''}
+    <button class="btn btn-primary" onclick="signIn()" \${busy ? 'disabled' : ''} style="max-width:240px;width:100%;">
+      \${busy ? '<span class="spinner"></span> Opening GitHub...' : 'Sign in with GitHub'}
+    </button>
+    <div style="font-size:10px;color:var(--muted);margin-top:14px;text-align:center;line-height:1.6;">
+      Uses your existing GitHub account.<br>No passwords stored.
+    </div>
+  </div>\`;
+}
+
+function renderUserBar() {
+  const u = S.auth.user;
+  const name = u ? (u.firstName || u.email || 'GitHub User') : 'GitHub User';
+  return \`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border);">
+    <div style="font-size:11px;font-weight:600;color:var(--muted-hi);letter-spacing:-0.01em;">\${esc(name)}</div>
+    <button class="btn btn-ghost btn-sm" onclick="signOut()">Sign out</button>
+  </div>\`;
+}
+
 // ── RENDER ─────────────────────────────────────────────────────────────────────
 function render(animate) {
   const root = document.getElementById('root');
   if (!root) return;
 
-  const html = renderTabs() + renderTabContent();
+  // Gate: show sign-in wall if not authenticated
+  if (!S.auth.isAuthenticated) {
+    const html = renderSignIn();
+    if (animate) {
+      root.style.transition = 'opacity 0.15s ease';
+      root.style.opacity = '0';
+      setTimeout(() => { root.innerHTML = html; root.style.opacity = '1'; }, 150);
+    } else {
+      root.innerHTML = html;
+    }
+    return;
+  }
+
+  const html = renderUserBar() + renderTabs() + renderTabContent();
 
   if (animate) {
     // Fade-out old content, swap, fade in new
