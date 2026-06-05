@@ -48,32 +48,30 @@ export class AuthManager {
 
     try {
       const port = await findAvailablePort();
-      const authUrl = `http://127.0.0.1:${port}/`;
+      const frontendApi = this.getFrontendApiBase(publishableKey);
 
-      // Start server BEFORE opening browser
-      const serverPromise = startOAuthCallbackServer(port, publishableKey, provider);
+      // Server serves the auth page AND receives result via POST /done
+      const serverPromise = startOAuthCallbackServer(port, publishableKey, frontendApi, provider);
 
-      // Open browser — try every available method
-      await this.openBrowser(authUrl, provider);
+      // Open local auth page in browser
+      await this.openBrowser(`http://127.0.0.1:${port}/`, provider);
 
-      // Show notification with manual fallback URL
       void vscode.window.showInformationMessage(
         `SecureScan: Complete ${provider} sign-in in your browser, then return to VS Code.`,
         'Open Manually'
       ).then(action => {
         if (action === 'Open Manually') {
-          void vscode.env.openExternal(vscode.Uri.parse(authUrl));
+          void vscode.env.openExternal(vscode.Uri.parse(`http://127.0.0.1:${port}/`));
         }
       });
 
-      // Wait for browser to complete OAuth and POST result back
       const result = await serverPromise;
 
       if (result.error) {
         return { success: false, error: result.error };
       }
 
-      // Build user object from browser-reported data
+      // Build user from what the browser page reported
       let user: AuthUser | null = result.userId
         ? {
             id: result.userId,
@@ -84,15 +82,15 @@ export class AuthManager {
           }
         : null;
 
-      // Optionally enrich with Backend API if secret key is available
+      // Enrich via Backend API if we only have sessionId
       const secretKey = this.getClerkSecretKey();
-      if (secretKey && result.userId && !result.email) {
-        user = (await this.fetchUserBySecretKey(secretKey, result.userId)) ?? user;
+      if (secretKey && result.sessionId && !result.userId) {
+        user = await this.fetchUserBySessionId(secretKey, result.sessionId) ?? user;
       }
 
-      const sessionToken = result.token ?? `session_${Date.now()}`;
-      await this.persistSession(sessionToken, user);
+      await this.persistSession(result.sessionId ?? `session_${Date.now()}`, user);
       return { success: true };
+
 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'OAuth authentication failed';
@@ -176,6 +174,17 @@ export class AuthManager {
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
+
+  private async fetchUserBySessionId(secretKey: string, sessionId: string): Promise<AuthUser | null> {
+    try {
+      const sessResp = await axios.get(`https://api.clerk.com/v1/sessions/${sessionId}`, {
+        headers: { Authorization: `Bearer ${secretKey}` }, timeout: 8000,
+      });
+      const userId = sessResp.data?.user_id;
+      if (userId) return this.fetchUserBySecretKey(secretKey, userId);
+    } catch { /* fallback */ }
+    return null;
+  }
 
   private async fetchUserBySecretKey(secretKey: string, userId: string): Promise<AuthUser | null> {
     try {
