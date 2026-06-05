@@ -21,8 +21,21 @@ const DEFAULT_EXCLUDES = [
 const SUPPORTED_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
   '.py', '.php', '.java', '.go',
-  '.json', '.env', '.yaml', '.yml',
+  '.json', '.yaml', '.yml',
   '.sh', '.bash',
+]);
+
+// Env-like filenames we always want to scan regardless of extension
+const ENV_FILE_NAMES = new Set([
+  '.env',
+  '.env.local',
+  '.env.development',
+  '.env.production',
+  '.env.staging',
+  '.env.test',
+  '.env.development.local',
+  '.env.production.local',
+  '.env.test.local',
 ]);
 
 export function getAllFiles(rootPath: string, excludePatterns?: string[]): string[] {
@@ -49,7 +62,8 @@ export function getAllFiles(rootPath: string, excludePatterns?: string[]): strin
         walk(fullPath);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
-        if (SUPPORTED_EXTENSIONS.has(ext)) {
+        // Include env files and all supported extension files
+        if (ENV_FILE_NAMES.has(entry.name) || SUPPORTED_EXTENSIONS.has(ext)) {
           files.push(fullPath);
         }
       }
@@ -61,7 +75,12 @@ export function getAllFiles(rootPath: string, excludePatterns?: string[]): strin
 }
 
 function shouldExclude(relativePath: string, name: string, excludes: string[]): boolean {
-  if (name.startsWith('.') && name !== '.env') {
+  // Always allow env files
+  if (ENV_FILE_NAMES.has(name)) {
+    return false;
+  }
+  // Skip other dotfiles/dotdirs
+  if (name.startsWith('.')) {
     return true;
   }
   for (const pattern of excludes) {
@@ -75,7 +94,6 @@ function shouldExclude(relativePath: string, name: string, excludes: string[]): 
 export function readFileContent(filePath: string): string | null {
   try {
     const stats = fs.statSync(filePath);
-    // Skip files larger than 1MB
     if (stats.size > 1024 * 1024) {
       return null;
     }

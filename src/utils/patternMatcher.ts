@@ -5,10 +5,15 @@ export interface PatternMatch {
   match: string;
 }
 
+/**
+ * Scan content line-by-line. Each pattern gets a fresh regex per line
+ * so `g`-flag lastIndex never bleeds between files or lines.
+ */
 export function findPatternMatches(content: string, pattern: RegExp): PatternMatch[] {
   const lines = content.split('\n');
   const matches: PatternMatch[] = [];
-  const globalPattern = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
+  // Always create a fresh global regex to avoid lastIndex bleed
+  const globalPattern = new RegExp(pattern.source, pattern.flags.replace('g', '') + 'g');
 
   lines.forEach((line, lineIdx) => {
     globalPattern.lastIndex = 0;
@@ -20,10 +25,22 @@ export function findPatternMatches(content: string, pattern: RegExp): PatternMat
         snippet: line.trim(),
         match: m[0],
       });
+      // Prevent infinite loop on zero-length matches
+      if (m[0].length === 0) { globalPattern.lastIndex++; }
     }
   });
 
   return matches;
+}
+
+/**
+ * Extract a window of lines around a line number for context snippets.
+ */
+export function getContextSnippet(content: string, lineNum: number, radius = 1): string {
+  const lines = content.split('\n');
+  const start = Math.max(0, lineNum - 1 - radius);
+  const end = Math.min(lines.length, lineNum + radius);
+  return lines.slice(start, end).map(l => l.trim()).filter(Boolean).join(' | ');
 }
 
 export function containsAny(content: string, patterns: RegExp[]): boolean {
@@ -42,19 +59,12 @@ export function extractImports(content: string, language: 'js' | 'ts' | 'python'
     const requirePattern = /require\(['"]([^'"]+)['"]\)/g;
     const importPattern = /from\s+['"]([^'"]+)['"]/g;
     let m: RegExpExecArray | null;
-
-    while ((m = requirePattern.exec(content)) !== null) {
-      imports.push(m[1]);
-    }
-    while ((m = importPattern.exec(content)) !== null) {
-      imports.push(m[1]);
-    }
+    while ((m = requirePattern.exec(content)) !== null) { imports.push(m[1]); }
+    while ((m = importPattern.exec(content)) !== null) { imports.push(m[1]); }
   } else if (language === 'python') {
     const importPattern = /^import\s+(\S+)|^from\s+(\S+)\s+import/gm;
     let m: RegExpExecArray | null;
-    while ((m = importPattern.exec(content)) !== null) {
-      imports.push(m[1] ?? m[2]);
-    }
+    while ((m = importPattern.exec(content)) !== null) { imports.push(m[1] ?? m[2]); }
   }
 
   return imports;
