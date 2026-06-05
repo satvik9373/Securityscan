@@ -140,6 +140,7 @@ export type WebviewMessageType =
   | 'scan'
   | 'rescan'
   | 'signIn'
+  | 'signInDemo'
   | 'signOut'
   | 'openFile'
   | 'generateFix'

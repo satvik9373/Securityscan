@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
 import { RuleMatch, AIFixPrompt } from '../types';
+import { getEnvVar } from '../utils/envReader';
 
 export class AIFixGenerator {
   private getOpenAIKey(): string | undefined {
     const config = vscode.workspace.getConfiguration('securescan');
-    return config.get<string>('openaiApiKey') || process.env['OPENAI_API_KEY'];
+    return (
+      config.get<string>('openaiApiKey') ||
+      getEnvVar('OPENAI_API_KEY', 'NEXT_PUBLIC_OPENAI_API_KEY')
+    );
   }
 
   async generateFix(issue: RuleMatch, framework: string): Promise<AIFixPrompt> {

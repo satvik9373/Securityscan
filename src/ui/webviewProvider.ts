@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { AuthManager } from '../authentication/authManager';
 import { StateManager } from '../storage/stateManager';
 import { SecurityScanner } from '../scanner/scanner';
@@ -7,7 +6,7 @@ import { AIFixGenerator } from '../ai/fixGenerator';
 import { globalRuleRegistry } from '../rules/registry';
 import { openFileAtLine } from '../utils/fileUtils';
 import { calculateSecurityScore } from '../score-engine/calculator';
-import { WebviewMessage, ScanResult, RuleMatch } from '../types';
+import { WebviewMessage } from '../types';
 import { getWebviewContent } from './webviewContent';
 
 export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
@@ -69,8 +68,24 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'signIn': {
-        const payload = message.payload as { email: string; password: string };
-        const result = await this.authManager.signIn(payload.email, payload.password);
+        const payload = message.payload as { provider?: string; email?: string };
+        const provider = (payload.provider ?? 'github') as 'google' | 'github';
+
+        this.post({ type: 'scanProgress', payload: { message: `Opening browser for ${provider} sign-in...`, percent: 50 } });
+
+        const result = await this.authManager.signInWithOAuth(provider);
+        if (result.success) {
+          this.post({ type: 'authSuccess', payload: this.authManager.getState() });
+          this.pushState();
+        } else {
+          this.post({ type: 'authError', payload: result.error });
+        }
+        break;
+      }
+
+      case 'signInDemo': {
+        const payload = message.payload as { email: string };
+        const result = await this.authManager.signInDemo(payload.email || 'demo@securescan.dev');
         if (result.success) {
           this.post({ type: 'authSuccess', payload: this.authManager.getState() });
           this.pushState();
