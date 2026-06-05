@@ -56,16 +56,16 @@ export class AuthManager {
       // Step 1: Create a sign-in attempt with OAuth strategy
       const signInResp = await axios.post(
         `${frontendApi}/v1/client/sign_ins`,
-        {
+        new URLSearchParams({
           strategy: `oauth_${provider}`,
           redirect_url: callbackUrl,
           action_complete_redirect_url: callbackUrl,
-        },
+        }).toString(),
         {
           headers: {
             Authorization: `Bearer ${publishableKey}`,
-            'Content-Type': 'application/json',
-            'Clerk-Backend-API-Version': '2024-10-01',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'origin': frontendApi,
           },
           timeout: 10000,
         }
@@ -77,7 +77,8 @@ export class AuthManager {
         signInData?.external_verification_redirect_url;
 
       if (!redirectUrl) {
-        return { success: false, error: 'Could not get OAuth redirect URL from Clerk.' };
+        const errMsg = signInResp.data?.errors?.[0]?.message ?? 'Could not get OAuth redirect URL from Clerk.';
+        return { success: false, error: errMsg };
       }
 
       // Step 2: Start local callback server BEFORE opening browser
@@ -245,12 +246,12 @@ export class AuthManager {
   }
 
   getFrontendApiBase(publishableKey: string): string {
-    // pk_test_BASE64. or pk_live_BASE64.
+    // pk_test_BASE64. — base64 encodes the frontend API host ending with "$"
     const parts = publishableKey.split('_');
     if (parts.length >= 3) {
-      const encoded = parts[2].replace(/\.+$/, '');
+      const encoded = parts[2].replace(/[.$]+$/, '');
       try {
-        const decoded = Buffer.from(encoded, 'base64').toString('utf-8').replace(/\.+$/, '');
+        const decoded = Buffer.from(encoded, 'base64').toString('utf-8').replace(/[.$\0]+$/, '');
         if (decoded.includes('.') && decoded.length > 4) {
           return `https://${decoded}`;
         }
