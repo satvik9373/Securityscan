@@ -408,7 +408,7 @@ const vscode = acquireVsCodeApi();
 // ── State ──────────────────────────────────────────────────────────────────────
 let S = {
   auth:       { isAuthenticated: false, user: null },
-  authBusy:   false,   // waiting for GitHub sign-in
+  authBusy:   false,
   authError:  null,
   scan:     null,
   resolved: [],
@@ -416,6 +416,16 @@ let S = {
   progress: { message: 'Scanning...', percent: 0 },
   tab:      'dashboard',
   error:    null,
+  ai: {
+    keyLoaded: false,
+    keySource: 'none',
+    lastRequestTime: null,
+    lastResponseTime: null,
+    lastDurationMs: null,
+    totalTokensUsed: 0,
+    lastError: null,
+    requestCount: 0,
+  },
 };
 
 // Track previous scanning state to know when to do a full re-render vs in-place update
@@ -514,6 +524,14 @@ window.addEventListener('message', ev => {
       S.error    = msg.payload;
       updateProgressDOM();
       render(false);
+      break;
+    }
+
+    case 'aiStatus': {
+      if (msg.payload) S.ai = msg.payload;
+      // Update debug panel in-place if it's already rendered
+      const dp = document.getElementById('ai-debug-panel');
+      if (dp) dp.innerHTML = renderDebugPanelInner();
       break;
     }
   }
@@ -668,10 +686,14 @@ function attachIssueListeners() {
 function renderTabs() {
   const n = S.scan ? S.scan.issues.length : null;
   const pill = n !== null ? '<span class="pill" style="margin-left:5px;">' + n + '</span>' : '';
+  const aiDot = S.ai.keyLoaded
+    ? '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--success);margin-left:5px;vertical-align:middle;"></span>'
+    : '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--critical);margin-left:5px;vertical-align:middle;"></span>';
   return \`<div class="tabs">
     <div class="tab \${S.tab==='dashboard'?'active':''}" onclick="setTab('dashboard')">Dashboard</div>
     <div class="tab \${S.tab==='issues'?'active':''}" onclick="setTab('issues')">Issues\${pill}</div>
     <div class="tab \${S.tab==='checklist'?'active':''}" onclick="setTab('checklist')">Checklist</div>
+    <div class="tab \${S.tab==='debug'?'active':''}" onclick="setTab('debug')">AI\${aiDot}</div>
   </div>\`;
 }
 
@@ -680,6 +702,7 @@ function renderTabContent() {
     case 'dashboard': return renderDashboard();
     case 'issues':    return renderIssues();
     case 'checklist': return renderChecklist();
+    case 'debug':     return renderDebugPanel();
     default: return '';
   }
 }
@@ -894,6 +917,82 @@ function renderChecklist() {
     </div>
   \` : ''}
   \`;
+}
+
+// ── Debug Panel ───────────────────────────────────────────────────────────────
+function renderDebugPanelInner() {
+  const ai = S.ai;
+  const keyStatus = ai.keyLoaded
+    ? '<span style="color:var(--success);font-weight:700;">LOADED</span> <span style="color:var(--muted);font-size:10px;">(source: ' + esc(ai.keySource) + ')</span>'
+    : '<span style="color:var(--critical);font-weight:700;">NOT CONFIGURED</span>';
+
+  const lastReq = ai.lastRequestTime
+    ? new Date(ai.lastRequestTime).toLocaleTimeString()
+    : 'Never';
+  const lastResp = ai.lastResponseTime
+    ? new Date(ai.lastResponseTime).toLocaleTimeString()
+    : 'Never';
+  const duration = ai.lastDurationMs !== null ? ai.lastDurationMs + 'ms' : '—';
+
+  return \`
+    <div class="sec-lbl" style="margin-bottom:10px;">OpenAI Status</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">
+      <div class="card" style="padding:10px 12px;">
+        <div style="font-size:9.5px;color:var(--muted);margin-bottom:4px;letter-spacing:0.04em;text-transform:uppercase;">API Key</div>
+        <div style="font-size:11.5px;">\${keyStatus}</div>
+      </div>
+      <div class="card" style="padding:10px 12px;">
+        <div style="font-size:9.5px;color:var(--muted);margin-bottom:4px;letter-spacing:0.04em;text-transform:uppercase;">Requests</div>
+        <div style="font-size:11.5px;font-weight:700;color:var(--fg);">\${ai.requestCount}</div>
+      </div>
+      <div class="card" style="padding:10px 12px;">
+        <div style="font-size:9.5px;color:var(--muted);margin-bottom:4px;letter-spacing:0.04em;text-transform:uppercase;">Tokens Used</div>
+        <div style="font-size:11.5px;font-weight:700;color:var(--fg);">\${ai.totalTokensUsed.toLocaleString()}</div>
+      </div>
+      <div class="card" style="padding:10px 12px;">
+        <div style="font-size:9.5px;color:var(--muted);margin-bottom:4px;letter-spacing:0.04em;text-transform:uppercase;">Last Response Time</div>
+        <div style="font-size:11.5px;font-weight:700;color:var(--fg);">\${duration}</div>
+      </div>
+    </div>
+
+    <div class="sec-lbl" style="margin-bottom:8px;">Request Log</div>
+    <div class="card" style="padding:10px 12px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+        <span style="font-size:10px;color:var(--muted);">Last request sent</span>
+        <span style="font-size:10px;color:var(--muted-hi);">\${lastReq}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;">
+        <span style="font-size:10px;color:var(--muted);">Last response received</span>
+        <span style="font-size:10px;color:var(--muted-hi);">\${lastResp}</span>
+      </div>
+    </div>
+
+    \${ai.lastError ? \`<div class="error-banner" style="margin-bottom:8px;"><span style="font-weight:700;">Last Error:</span> \${esc(ai.lastError)}</div>\` : ''}
+
+    <div class="sec-lbl" style="margin-bottom:8px;">Architecture</div>
+    <div class="card" style="padding:10px 12px;">
+      <div style="font-size:10.5px;color:var(--muted-hi);line-height:1.7;">
+        <div style="margin-bottom:4px;"><span style="color:var(--success);">Scan</span> — 100% rules-based (regex). <strong>OpenAI is NOT called.</strong></div>
+        <div style="margin-bottom:4px;"><span style="color:var(--medium);">Score</span> — Math-only (severity weights). No AI.</div>
+        <div style="margin-bottom:4px;"><span style="color:var(--medium);">Checklist</span> — Generated from rule results. No AI.</div>
+        <div><span style="color:var(--info,#60a5fa);">Generate Fix</span> — Calls <code style="font-size:9.5px;background:var(--surface2);padding:1px 4px;border-radius:3px;">gpt-4o-mini</code> via <code style="font-size:9.5px;background:var(--surface2);padding:1px 4px;border-radius:3px;">chat.completions</code>. Requires API key.</div>
+      </div>
+    </div>
+
+    \${!ai.keyLoaded ? \`
+    <div class="card" style="padding:10px 12px;margin-top:8px;border-color:var(--medium);">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:6px;">To enable AI-powered fix explanations, add your OpenAI key:</div>
+      <div style="font-size:10px;color:var(--muted-hi);line-height:1.8;font-family:monospace;">
+        Settings &rarr; securescan.openaiApiKey<br>
+        — or —<br>
+        OPENAI_API_KEY=sk-... in your .env
+      </div>
+    </div>\` : ''}
+  \`;
+}
+
+function renderDebugPanel() {
+  return \`<div id="ai-debug-panel" style="padding:4px 0;">\${renderDebugPanelInner()}</div>\`;
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────

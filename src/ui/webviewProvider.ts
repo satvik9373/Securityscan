@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AuthManager } from '../authentication/authManager';
 import { StateManager } from '../storage/stateManager';
 import { SecurityScanner } from '../scanner/scanner';
-import { AIFixGenerator } from '../ai/fixGenerator';
+import { AIFixGenerator, getAITelemetry } from '../ai/fixGenerator';
 import { globalRuleRegistry } from '../rules/registry';
 import { openFileAtLine } from '../utils/fileUtils';
 import { calculateSecurityScore } from '../score-engine/calculator';
@@ -52,7 +52,9 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
   private async handleMessage(msg: WebviewMessage): Promise<void> {
     switch (msg.type) {
       case 'ready':
+        this.fixGenerator.checkKeyStatus();
         this.pushState();
+        this.pushAIStatus();
         break;
 
       case 'signIn': {
@@ -93,6 +95,7 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
         const issue = result.issues.find(i => i.ruleId === payload.ruleId);
         if (!issue) break;
         const fix = await this.fixGenerator.generateFix(issue, result.framework);
+        this.pushAIStatus();
         this.post({ type: 'updateState', payload: { fixPrompt: fix } });
         break;
       }
@@ -103,7 +106,16 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
         this.recalcAndPush();
         break;
       }
+
+      case 'aiStatus':
+        this.pushAIStatus();
+        break;
     }
+  }
+
+  private pushAIStatus(): void {
+    const t = getAITelemetry();
+    this.post({ type: 'aiStatus', payload: t });
   }
 
   private async runScan(isRescan: boolean): Promise<void> {
@@ -140,6 +152,7 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
       this.stateManager.saveScanResult(result);
       this.post({ type: 'scanComplete', payload: result });
       this.pushState();
+      this.pushAIStatus();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Scan failed';
       this.post({ type: 'error', payload: msg });
@@ -178,6 +191,7 @@ export class SecureScanWebviewProvider implements vscode.WebviewViewProvider {
     if (this.view) {
       this.view.webview.html = getWebviewContent(this.view.webview, this.extensionUri);
       this.pushState();
+      this.pushAIStatus();
     }
   }
 }

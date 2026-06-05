@@ -153,4 +153,5 @@ export type WebviewMessageType =
   | 'authProgress'
   | 'authSuccess'
   | 'authError'
+  | 'aiStatus'
   | 'error';

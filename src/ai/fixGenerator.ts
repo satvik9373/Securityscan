@@ -2,20 +2,61 @@ import * as vscode from 'vscode';
 import { RuleMatch, AIFixPrompt } from '../types';
 import { getEnvVar } from '../utils/envReader';
 
+export interface AITelemetry {
+  keyLoaded: boolean;
+  keySource: 'vscode-config' | 'env-var' | 'none';
+  lastRequestTime: number | null;
+  lastResponseTime: number | null;
+  lastDurationMs: number | null;
+  totalTokensUsed: number;
+  lastError: string | null;
+  requestCount: number;
+}
+
+const telemetry: AITelemetry = {
+  keyLoaded: false,
+  keySource: 'none',
+  lastRequestTime: null,
+  lastResponseTime: null,
+  lastDurationMs: null,
+  totalTokensUsed: 0,
+  lastError: null,
+  requestCount: 0,
+};
+
+export function getAITelemetry(): AITelemetry {
+  return { ...telemetry };
+}
+
 export class AIFixGenerator {
-  private getOpenAIKey(): string | undefined {
+  private getOpenAIKey(): { key: string | undefined; source: AITelemetry['keySource'] } {
     const config = vscode.workspace.getConfiguration('securescan');
-    return (
-      config.get<string>('openaiApiKey') ||
-      getEnvVar('OPENAI_API_KEY', 'NEXT_PUBLIC_OPENAI_API_KEY')
-    );
+    const fromConfig = config.get<string>('openaiApiKey');
+    if (fromConfig) return { key: fromConfig, source: 'vscode-config' };
+
+    const fromEnv = getEnvVar('OPENAI_API_KEY', 'NEXT_PUBLIC_OPENAI_API_KEY');
+    if (fromEnv) return { key: fromEnv, source: 'env-var' };
+
+    return { key: undefined, source: 'none' };
+  }
+
+  checkKeyStatus(): void {
+    const { key, source } = this.getOpenAIKey();
+    telemetry.keyLoaded = !!key;
+    telemetry.keySource = source;
+    console.log(`[SecureScan] OPENAI KEY EXISTS: ${telemetry.keyLoaded ? 'TRUE' : 'FALSE'} (source: ${source})`);
   }
 
   async generateFix(issue: RuleMatch, framework: string): Promise<AIFixPrompt> {
     const affectedFiles = [...new Set(issue.locations.map(l => l.file))];
     const copyablePrompt = this.buildPrompt(issue, framework, affectedFiles);
 
-    const apiKey = this.getOpenAIKey();
+    const { key: apiKey, source } = this.getOpenAIKey();
+    telemetry.keyLoaded = !!apiKey;
+    telemetry.keySource = source;
+
+    console.log(`[SecureScan] OPENAI KEY EXISTS: ${telemetry.keyLoaded ? 'TRUE' : 'FALSE'} (source: ${source})`);
+
     let explanation = issue.description;
     let remediationPlan = issue.remediationGuidance;
 
@@ -25,8 +66,12 @@ export class AIFixGenerator {
         explanation = enhanced.explanation;
         remediationPlan = enhanced.remediationPlan;
       } catch (err) {
-        console.error('OpenAI call failed, using static guidance:', err);
+        const msg = err instanceof Error ? err.message : String(err);
+        telemetry.lastError = msg;
+        console.error('[SecureScan] OPENAI REQUEST FAILED:', msg);
       }
+    } else {
+      console.warn('[SecureScan] OPENAI REQUEST SKIPPED — no API key configured. Add key via: Settings > securescan.openaiApiKey or OPENAI_API_KEY env var');
     }
 
     return {
@@ -51,6 +96,13 @@ export class AIFixGenerator {
       .slice(0, 5)
       .map(l => `  - ${l.file}:${l.line}${l.snippet ? ` — ${l.snippet}` : ''}`)
       .join('\n');
+
+    const requestStart = Date.now();
+    telemetry.lastRequestTime = requestStart;
+    telemetry.lastError = null;
+    telemetry.requestCount++;
+
+    console.log(`[SecureScan] OPENAI REQUEST STARTED — issue: ${issue.ruleId}, model: gpt-4o-mini, request #${telemetry.requestCount}`);
 
     const response = await client.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -80,6 +132,15 @@ Respond in JSON: { "explanation": "...", "remediationPlan": "..." }`,
       temperature: 0.3,
       max_tokens: 600,
     });
+
+    const durationMs = Date.now() - requestStart;
+    telemetry.lastResponseTime = Date.now();
+    telemetry.lastDurationMs = durationMs;
+
+    const tokensUsed = response.usage?.total_tokens ?? 0;
+    telemetry.totalTokensUsed += tokensUsed;
+
+    console.log(`[SecureScan] OPENAI RESPONSE RECEIVED — duration: ${durationMs}ms, tokens: ${tokensUsed}, total tokens used: ${telemetry.totalTokensUsed}`);
 
     const content = response.choices[0]?.message?.content ?? '{}';
     const parsed = JSON.parse(content) as { explanation: string; remediationPlan: string };
