@@ -430,8 +430,11 @@ function renderOAuthWaiting() {
         <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px;">
           Waiting for \${provider} sign-in...
         </div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">
-          A browser window has opened. Complete sign-in there and you'll be redirected back automatically.
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">
+          A browser window should open automatically. If it didn't, check your VS Code notification bar — there's an <strong style="color:var(--text);">Open Manually</strong> button.
+        </div>
+        <div style="font-size:11px;color:var(--muted);padding:8px;background:rgba(255,255,255,.03);border-radius:var(--rs);border:1px solid var(--border);margin-bottom:12px;">
+          💡 After signing in, this panel will update automatically.
         </div>
         <button class="btn btn-secondary btn-sm" onclick="cancelOAuth()">Cancel</button>
       </div>

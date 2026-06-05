@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as cp from 'child_process';
 import axios from 'axios';
 import { AuthState, AuthUser } from '../types';
 import { findAvailablePort, startOAuthCallbackServer } from './oauthServer';
@@ -47,13 +48,23 @@ export class AuthManager {
 
     try {
       const port = await findAvailablePort();
+      const authUrl = `http://127.0.0.1:${port}/`;
 
-      // Start local HTTP server that serves the Clerk JS auth page
-      // and receives the session result via POST /done
+      // Start server BEFORE opening browser
       const serverPromise = startOAuthCallbackServer(port, publishableKey, provider);
 
-      // Open the local auth page in the user's default browser
-      await vscode.env.openExternal(vscode.Uri.parse(`http://127.0.0.1:${port}/`));
+      // Open browser — try every available method
+      await this.openBrowser(authUrl, provider);
+
+      // Show notification with manual fallback URL
+      void vscode.window.showInformationMessage(
+        `SecureScan: Complete ${provider} sign-in in your browser, then return to VS Code.`,
+        'Open Manually'
+      ).then(action => {
+        if (action === 'Open Manually') {
+          void vscode.env.openExternal(vscode.Uri.parse(authUrl));
+        }
+      });
 
       // Wait for browser to complete OAuth and POST result back
       const result = await serverPromise;
@@ -107,6 +118,62 @@ export class AuthManager {
 
   getState(): AuthState { return this.state; }
   isAuthenticated(): boolean { return this.state.isAuthenticated; }
+
+  // ── Browser opener ─────────────────────────────────────────────────────────
+
+  private async openBrowser(url: string, provider: string): Promise<void> {
+    // Method 1: VS Code API (works in most cases)
+    try {
+      const opened = await vscode.env.openExternal(vscode.Uri.parse(url));
+      if (opened) {
+        console.log(`[SecureScan] Opened browser via vscode.env.openExternal: ${url}`);
+        return;
+      }
+    } catch (e) {
+      console.warn('[SecureScan] openExternal failed:', e);
+    }
+
+    // Method 2: OS-specific shell command
+    try {
+      const cmd = this.getBrowserCommand(url);
+      console.log(`[SecureScan] Opening browser via shell: ${cmd}`);
+      await new Promise<void>((resolve, reject) => {
+        cp.exec(cmd, { timeout: 5000 }, (err) => {
+          if (err) { reject(err); } else { resolve(); }
+        });
+      });
+      return;
+    } catch (e) {
+      console.warn('[SecureScan] Shell browser open failed:', e);
+    }
+
+    // Method 3: Show URL so user can open manually
+    const action = await vscode.window.showErrorMessage(
+      `SecureScan: Could not open browser automatically. Click "Open" or copy the URL to sign in with ${provider}.`,
+      'Open',
+      'Copy URL'
+    );
+    if (action === 'Open') {
+      await vscode.env.openExternal(vscode.Uri.parse(url));
+    } else if (action === 'Copy URL') {
+      await vscode.env.clipboard.writeText(url);
+      vscode.window.showInformationMessage(`URL copied. Paste it in your browser: ${url}`);
+    }
+  }
+
+  private getBrowserCommand(url: string): string {
+    const escaped = url.replace(/"/g, '\\"');
+    switch (process.platform) {
+      case 'win32':
+        // Use start with an empty title string to handle URLs with query params
+        return `start "" "${escaped}"`;
+      case 'darwin':
+        return `open "${escaped}"`;
+      default:
+        // Linux — try xdg-open, sensible-browser, or x-www-browser
+        return `xdg-open "${escaped}" || sensible-browser "${escaped}" || x-www-browser "${escaped}"`;
+    }
+  }
 
   // ── Private helpers ────────────────────────────────────────────────────────
 
