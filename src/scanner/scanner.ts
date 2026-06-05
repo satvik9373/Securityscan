@@ -21,9 +21,11 @@ export class SecurityScanner {
     onProgress?: ScanProgressCallback
   ): Promise<ScanResult> {
     const startTime = Date.now();
+    console.log(`[SecureScan] SCAN STARTED — path: ${rootPath}`);
 
     onProgress?.('Detecting framework...', 5);
     const projectInfo = this.detector.detect(rootPath);
+    console.log(`[SecureScan] FRAMEWORK DETECTED — framework: ${projectInfo.framework}, language: ${projectInfo.language}`);
 
     onProgress?.(`Detected: ${projectInfo.framework} / ${projectInfo.language}`, 15);
 
@@ -46,30 +48,44 @@ export class SecurityScanner {
       }
     }
 
+    console.log(`[SecureScan] FILES DISCOVERED — total: ${fileContents.size} files, ${linesScanned.toLocaleString()} lines`);
     onProgress?.(`Scanned ${linesScanned.toLocaleString()} lines across ${fileContents.size} files`, 50);
 
     const context: ScanContext = { projectInfo, fileContents };
 
-    // Run rules
+    // Run rules — NOTE: No OpenAI calls here. All detections are pure regex pattern matching.
     const rules = this.registry.getAllRules();
     const issues: RuleMatch[] = [];
     let ruleIdx = 0;
 
+    console.log(`[SecureScan] RULES EXECUTED — running ${rules.length} rules (pattern matching only, no AI)`);
+
     for (const rule of rules) {
       onProgress?.(`Running rule: ${rule.title}`, 50 + Math.floor((ruleIdx / rules.length) * 40));
       try {
+        const before = issues.length;
         const matches = rule.detect(context);
         issues.push(...matches);
+        if (matches.length > 0) {
+          console.log(`[SecureScan]   rule "${rule.id}" — ${matches.length} issue(s) found`);
+        }
       } catch (err) {
-        console.error(`Rule ${rule.id} failed:`, err);
+        console.error(`[SecureScan] Rule ${rule.id} failed:`, err);
       }
       ruleIdx++;
     }
 
+    console.log(`[SecureScan] RULES COMPLETE — ${issues.length} total issues detected`);
+
     onProgress?.('Calculating security score...', 92);
     const score = calculateSecurityScore(issues, resolvedIssues);
+    console.log(`[SecureScan] SCORE CALCULATED — total: ${score.total}, grade: ${score.grade} (pure math, no AI)`);
 
     onProgress?.('Scan complete', 100);
+
+    const duration = Date.now() - startTime;
+    console.log(`[SecureScan] SCAN COMPLETED — duration: ${duration}ms, issues: ${issues.length}, score: ${score.total}`);
+    console.log(`[SecureScan] NOTE: OpenAI is NOT called during scan. AI is only used when you click "Generate Fix" on an issue.`);
 
     return {
       id: crypto.randomUUID(),
@@ -81,7 +97,7 @@ export class SecurityScanner {
       score,
       fileCount: fileContents.size,
       linesScanned,
-      duration: Date.now() - startTime,
+      duration,
     };
   }
 }
