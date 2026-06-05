@@ -50,11 +50,13 @@ export class AuthManager {
       const port = await findAvailablePort();
       const frontendApi = this.getFrontendApiBase(publishableKey);
 
-      // Server serves the auth page AND receives result via POST /done
-      const serverPromise = startOAuthCallbackServer(port, publishableKey, frontendApi, provider);
+      // Start local server FIRST — Clerk will redirect back to it after sign-in
+      const serverPromise = startOAuthCallbackServer(port);
 
-      // Open local auth page in browser
-      await this.openBrowser(`http://127.0.0.1:${port}/`, provider);
+      // Build Clerk hosted sign-in URL with redirect back to our local server
+      const redirectUrl = encodeURIComponent(`http://127.0.0.1:${port}/`);
+      const signInUrl = `${frontendApi}/sign-in#/?redirect_url=${redirectUrl}`;
+      await this.openBrowser(signInUrl, provider);
 
       void vscode.window.showInformationMessage(
         `SecureScan: Complete ${provider} sign-in in your browser, then return to VS Code.`,

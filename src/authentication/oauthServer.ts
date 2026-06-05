@@ -3,6 +3,7 @@ import * as net from 'net';
 
 export interface OAuthCallbackResult {
   sessionId?: string;
+  dbJwt?: string;
   userId?: string;
   email?: string;
   firstName?: string;
@@ -22,211 +23,117 @@ export async function findAvailablePort(): Promise<number> {
   });
 }
 
-function buildAuthHtml(publishableKey: string, frontendApi: string, provider: string, port: number): string {
-  const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
-  const pkJson        = JSON.stringify(publishableKey);
-  const apiJson       = JSON.stringify(frontendApi);
-  const providerJson  = JSON.stringify(provider);
-  const portNum       = Number(port);
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<title>SecureScan &#x2014; Sign In</title>
+const SUCCESS_HTML = `<!DOCTYPE html><html>
+<head><meta charset="UTF-8"><title>SecureScan &#x2014; Signed In</title>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d1117;color:#e6edf3;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  display:flex;align-items:center;justify-content:center;height:100vh;
-  flex-direction:column;gap:0}
-.card{text-align:center;padding:40px 48px;max-width:440px;width:100%}
-.logo{font-size:52px;margin-bottom:14px}
-h2{font-size:20px;font-weight:700;margin-bottom:6px}
-p{color:#7d8590;font-size:14px;margin-bottom:24px}
-.spinner{width:28px;height:28px;border:3px solid #30363d;
-  border-top-color:#238636;border-radius:50%;
-  animation:spin .65s linear infinite;margin:0 auto 14px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.status{font-size:13px;color:#7d8590;min-height:20px}
-.err{color:#f85149;font-size:13px;margin-top:14px;padding:12px 14px;
-  background:rgba(248,81,73,.08);border-radius:6px;
-  border:1px solid rgba(248,81,73,.2);text-align:left;display:none;
-  white-space:pre-wrap;word-break:break-word}
-</style>
-</head>
-<body>
-<div class="card">
-  <div class="logo">&#x1F6E1;&#xFE0F;</div>
-  <h2>SecureScan</h2>
-  <p>Signing you in with <strong>${providerLabel}</strong></p>
-  <div class="spinner" id="spinner"></div>
-  <div class="status"  id="status">Connecting...</div>
-  <div class="err"     id="err"></div>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}
+.icon{font-size:56px;margin-bottom:16px}
+h2{font-size:20px;font-weight:700;margin-bottom:8px}
+p{color:#7d8590;font-size:14px}
+.bar{width:200px;height:3px;background:#238636;border-radius:3px;margin:20px auto 0;
+  animation:shrink 2s linear forwards}
+@keyframes shrink{from{width:200px}to{width:0}}
+</style></head>
+<body><div>
+  <div class="icon">&#x1F6E1;&#xFE0F;</div>
+  <h2>Signed in to SecureScan!</h2>
+  <p>Return to VS Code &mdash; this tab will close automatically.</p>
+  <div class="bar"></div>
 </div>
-<script>
-var PK          = ${pkJson};
-var FRONTEND    = ${apiJson};
-var PROVIDER    = ${providerJson};
-var PORT        = ${portNum};
-var notified    = false;
+<script>setTimeout(function(){window.close()},2200)</script>
+</body></html>`;
 
-var $sp = document.getElementById('spinner');
-var $st = document.getElementById('status');
-var $er = document.getElementById('err');
+const WAITING_HTML = `<!DOCTYPE html><html>
+<head><meta charset="UTF-8"><title>SecureScan &#x2014; Sign In</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}
+.spinner{width:32px;height:32px;border:3px solid #30363d;border-top-color:#238636;
+  border-radius:50%;animation:spin .65s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+p{color:#7d8590;font-size:14px}
+</style></head>
+<body><div>
+  <div class="spinner"></div>
+  <p>Completing sign-in, please wait...</p>
+</div></body></html>`;
 
-function setStatus(m){ $st.textContent = m; }
-
-function showSuccess(){
-  $sp.style.display='none';
-  $st.innerHTML='<span style="color:#3fb950;font-size:22px">&#x2705;</span><br/>Signed in! Return to VS Code.';
-  setTimeout(function(){ window.close(); }, 2000);
-}
-
-function showError(m){
-  $sp.style.display='none';
-  $er.textContent=m;
-  $er.style.display='block';
-  $st.textContent='Close this tab and try again in VS Code.';
-}
-
-function done(data){
-  if(notified) return Promise.resolve();
-  notified=true;
-  return fetch('/done',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(data)
-  }).then(function(){
-    if(data.error){ showError(data.error); } else { showSuccess(); }
-  }).catch(function(){
-    showError('Could not communicate with VS Code. Please close this tab.');
-  });
-}
-
-/* ── Phase 2: Handle OAuth callback ────────────────────────────────── */
-function handleCallback(){
-  setStatus('Finalizing sign-in...');
-  /* After OAuth, call GET /v1/client with credentials (cookies) to get session */
-  return fetch(FRONTEND+'/v1/client',{
-    credentials:'include',
-    headers:{'Authorization':'Bearer '+PK}
-  }).then(function(r){ return r.json(); }).then(function(data){
-    var sessions = (data.response||data).sessions;
-    if(!sessions||!sessions.length){
-      return done({error:'No session found after OAuth. Please try again.'});
-    }
-    var sess = sessions[0];
-    var u    = sess.user || {};
-    var emails = u.email_addresses || [];
-    return done({
-      sessionId: sess.id,
-      userId:    u.id,
-      email:     emails[0]&&emails[0].email_address,
-      firstName: u.first_name,
-      lastName:  u.last_name,
-      imageUrl:  u.image_url,
-    });
-  }).catch(function(e){
-    return done({error:'Could not retrieve session: '+(e.message||String(e))});
-  });
-}
-
-/* ── Phase 1: Initiate OAuth ────────────────────────────────────────── */
-function startOAuth(){
-  setStatus('Requesting '+PROVIDER+' auth URL...');
-  var origin = 'http://127.0.0.1:'+PORT;
-  return fetch(FRONTEND+'/v1/client/sign_ins',{
-    method:'POST',
-    credentials:'include',
-    headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Bearer '+PK},
-    body:new URLSearchParams({
-      strategy:                    'oauth_'+PROVIDER,
-      redirect_url:                origin+'/',
-      action_complete_redirect_url:origin+'/',
-    }).toString()
-  }).then(function(r){ return r.json(); }).then(function(data){
-    if(data.errors&&data.errors.length){
-      throw new Error(data.errors[0].long_message||data.errors[0].message||'Clerk API error');
-    }
-    var resp     = data.response||data;
-    var fv       = resp.first_factor_verification||{};
-    var redirect = fv.external_verification_redirect_url||fv.redirect_url||resp.redirect_url;
-    if(!redirect){
-      throw new Error('Clerk did not return an OAuth URL. Check that '+PROVIDER+' is enabled in your Clerk dashboard.');
-    }
-    setStatus('Opening '+PROVIDER+'... (redirecting)');
-    window.location.href = redirect;
-  });
-}
-
-/* ── Entry point ─────────────────────────────────────────────────────── */
-var sp = new URLSearchParams(window.location.search);
-var isCallback =
-  sp.has('__clerk_status') || sp.has('__clerk_db_jwt') ||
-  sp.has('__clerk_created_session_id') || sp.has('code') || sp.has('state');
-
-if(isCallback){
-  handleCallback().catch(function(e){ done({error:e.message||String(e)}); });
-} else {
-  startOAuth().catch(function(e){
-    showError('OAuth error: '+(e.message||String(e)));
-    done({error:e.message||String(e)});
-  });
-}
-</script>
-</body>
-</html>`;
+function errorHtml(msg: string): string {
+  return `<!DOCTYPE html><html>
+<head><meta charset="UTF-8"><title>SecureScan &#x2014; Error</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;padding:20px}
+.icon{font-size:48px;margin-bottom:12px}
+h2{color:#f85149;font-size:18px;margin-bottom:8px}
+p{color:#7d8590;font-size:13px}
+</style></head>
+<body><div>
+  <div class="icon">&#x274C;</div>
+  <h2>Authentication Failed</h2>
+  <p>${msg.replace(/</g,'&lt;')}</p>
+  <p style="margin-top:10px">Close this tab and try again in VS Code.</p>
+</div></body></html>`;
 }
 
 export function startOAuthCallbackServer(
   port: number,
-  publishableKey: string,
-  frontendApi: string,
-  provider: string,
   timeoutMs = 300000
 ): Promise<OAuthCallbackResult> {
   return new Promise((resolve, reject) => {
-    const html = buildAuthHtml(publishableKey, frontendApi, provider, port);
-
     const server = http.createServer((req, res) => {
       if (!req.url) { res.writeHead(400); res.end(); return; }
+
       const url = new URL(req.url, `http://127.0.0.1:${port}`);
 
-      // POST /done — result from browser page
-      if (req.method === 'POST' && url.pathname === '/done') {
-        let body = '';
-        req.on('data', c => { body += c; });
-        req.on('end', () => {
-          res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-          });
-          res.end('{"ok":true}');
-          clearTimeout(timer);
-          server.close();
-          try { resolve(JSON.parse(body) as OAuthCallbackResult); }
-          catch { resolve({ error: 'Could not parse auth result' }); }
-        });
+      if (req.method !== 'GET') { res.writeHead(405); res.end(); return; }
+
+      // Extract whatever Clerk puts in the redirect URL
+      const status    = url.searchParams.get('__clerk_status');
+      const dbJwt     = url.searchParams.get('__clerk_db_jwt');
+      const sessionId = url.searchParams.get('__clerk_created_session_id');
+      const error     = url.searchParams.get('error') ?? url.searchParams.get('error_description');
+
+      // Clerk sometimes puts params in the hash — we serve a small page that
+      // re-sends them as query params so the server can read them
+      const hasParams = dbJwt || sessionId || status === 'verified' || error;
+
+      if (!hasParams) {
+        // No params yet — serve waiting page or hash-reading page
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+<script>
+// If Clerk put params in the hash, move them to query string and reload
+var hash = window.location.hash.replace(/^#\\/?\\?/,'');
+if(hash && hash.includes('__clerk')){
+  window.location.href = window.location.pathname + '?' + hash;
+}
+</script></head><body>${WAITING_HTML}</body></html>`);
         return;
       }
 
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204, {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST,GET,OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        });
-        res.end(); return;
-      }
-
-      // GET — serve auth page (initial load AND OAuth redirect back)
-      if (req.method === 'GET') {
+      if (error || status === 'failed') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(html); return;
+        res.end(errorHtml(error ?? 'Authentication failed'));
+        clearTimeout(timer);
+        server.close();
+        resolve({ error: error ?? 'Authentication failed' });
+        return;
       }
 
-      res.writeHead(404); res.end();
+      // Success
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(SUCCESS_HTML);
+      clearTimeout(timer);
+      server.close();
+      resolve({
+        dbJwt:     dbJwt     ?? undefined,
+        sessionId: sessionId ?? undefined,
+      });
     });
 
     server.listen(port, '127.0.0.1');
