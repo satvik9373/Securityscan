@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="370">
+  <rect width="600" height="370" fill="#393e46"/>
+  <line x1="0" y1="0" x2="600" y2="370" stroke="#ffffff08" stroke-width="1"/>
+  <line x1="600" y1="0" x2="0" y2="370" stroke="#ffffff08" stroke-width="1"/>
+  <text x="300" y="173" text-anchor="middle" font-family="Helvetica Neue,sans-serif"
+        font-size="13" letter-spacing="3" fill="#c8b89a" opacity="0.7">06</text>
+  <text x="300" y="199" text-anchor="middle" font-family="Helvetica Neue,sans-serif"
+        font-size="11" letter-spacing="2" fill="#ffffff50" text-transform="uppercase">SOFT GEOMETRY</text>
+</svg>
